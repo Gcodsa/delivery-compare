@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>مقارن التوصيل السعودي</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    body { background:#0b0f14; color:#f2f5f8; }
+    main { max-width: 980px; margin-inline: auto; padding: 2rem 1rem; }
+    .card { background:#121823; border:1px solid #1e2a3a; border-radius:16px; padding:1rem 1.2rem; }
+    .muted { color:#9fb0c3; font-size:0.95rem; }
+    .badge { padding:0.2rem 0.5rem; border-radius:999px; background:#1e2a3a; }
+    .best { background:#0f5132; }
+    table { width:100%; }
+    thead th { background:#10151e; position: sticky; top:0; }
+    tbody tr:hover { background:#0e1420; }
+    a.btn { text-decoration:none; color:#fff; background:#2b7fff; padding:.45rem .7rem; border-radius:10px; }
+    .grid { display:grid; gap:1rem; grid-template-columns: 1fr; }
+    @media (min-width: 720px) {
+      .grid { grid-template-columns: 2fr 1fr; }
+    }
+    input,button { direction: rtl; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>مقارن التوصيل السعودي</h1>
+    <p class="muted">اكتب اسم المطعم (مثال: <strong>هرفي</strong>) وسيتم البحث في هنقرستيشن، جاهز، كيتا، تو يو، مستر مندوب وحساب الإجمالي (السعر + التوصيل).</p>
+
+    <form method="post" class="card">
+      <div class="grid">
+        <div>
+          <label>اسم المطعم</label>
+          <input type="text" name="restaurant" placeholder="هرفي" required />
+        </div>
+        <div>
+          <label>المدينة</label>
+          <input type="text" name="city" value="الرياض" />
+        </div>
+        <div>
+          <label>Latitude</label>
+          <input type="number" step="0.0001" name="lat" value="24.7136" />
+        </div>
+        <div>
+          <label>Longitude</label>
+          <input type="number" step="0.0001" name="lng" value="46.6753" />
+        </div>
+      </div>
+      <button type="submit" style="margin-top: .8rem;">🔍 ابحث</button>
+    </form>
+
+    {% if error %}
+      <article class="card" style="border-color:#5b2222;background:#141017;color:#f7c9c9">{{ error }}</article>
+    {% endif %}
+
+    {% if results is not none %}
+      <article class="card">
+        <header style="display:flex;justify-content:space-between;align-items:center;">
+          <strong>النتائج</strong>
+          {% if query %}
+            <span class="badge">مطعم: {{ query.restaurant }} • {{ query.city }}</span>
+          {% endif %}
+        </header>
+        <div style="overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>التطبيق</th>
+                <th>الفرع/المطابقة</th>
+                <th>أقل صنف</th>
+                <th>سعره</th>
+                <th>التوصيل</th>
+                <th>الإجمالي</th>
+                <th>رابط</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% set best_total = None %}
+              {% for q in results %}
+                {% if best_total is none and q.total is not none %}
+                  {% set best_total = q.total %}
+                {% endif %}
+                <tr {% if best_total is not none and q.total == best_total %}style="outline:2px solid #1bc57b"{% endif %}>
+                  <td>{{ q.app_name }}</td>
+                  <td>{{ q.branch }}</td>
+                  <td>{{ q.item_name or '-' }}</td>
+                  <td>{{ '%.2f'|format(q.item_price) if q.item_price is not none else '-' }}</td>
+                  <td>
+                    {% if q.delivery_free %}<span class="badge best">مجاني</span>
+                    {% else %}
+                      {{ '%.2f'|format(q.delivery_fee) if q.delivery_fee is not none else '-' }}
+                    {% endif %}
+                  </td>
+                  <td><strong>{{ '%.2f'|format(q.total) if q.total is not none else '-' }}</strong></td>
+                  <td>{% if q.url %}<a class="btn" target="_blank" rel="noopener" href="{{ q.url }}">فتح</a>{% else %}-{% endif %}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <footer class="muted" style="margin-top:.6rem">
+          * القيم تقديرية بالاعتماد على القراءة المباشرة للصفحات. قد تختلف بحسب الفرع والإضافات والعروض المؤقتة.
+        </footer>
+      </article>
+    {% endif %}
+  </main>
+</body>
+</html>
