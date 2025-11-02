@@ -1,109 +1,176 @@
 <!doctype html>
 <html lang="ar" dir="rtl">
+      <header class="header">
+    <img src="https://i.imgur.com/2uxXbdo.png" class="logo" alt="شعار">
+  </header>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>مقارن التوصيل السعودي</title>
+  <title>مقارن أسعار التوصيل</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <style>
-    body { background:#0b0f14; color:#f2f5f8; }
-    main { max-width: 980px; margin-inline: auto; padding: 2rem 1rem; }
-    .card { background:#121823; border:1px solid #1e2a3a; border-radius:16px; padding:1rem 1.2rem; }
-    .muted { color:#9fb0c3; font-size:0.95rem; }
-    .badge { padding:0.2rem 0.5rem; border-radius:999px; background:#1e2a3a; }
-    .best { background:#0f5132; }
-    table { width:100%; }
-    thead th { background:#10151e; position: sticky; top:0; }
-    tbody tr:hover { background:#0e1420; }
-    a.btn { text-decoration:none; color:#fff; background:#2b7fff; padding:.45rem .7rem; border-radius:10px; }
-    .grid { display:grid; gap:1rem; grid-template-columns: 1fr; }
-    @media (min-width: 720px) {
-      .grid { grid-template-columns: 2fr 1fr; }
+    
+    body{background:#0b0f14;color:#f2f5f8;font-family:"Cairo",sans-serif}
+    main{max-width:900px;margin-inline:auto;padding:2rem 1rem}
+    .card{background:#121823;border:1px solid #1e2a3a;border-radius:16px;padding:1rem 1.2rem}
+    .muted{color:#9fb0c3}
+    button,input{direction:rtl}
+
+          header.header {
+      text-align: center;
+      padding: 0 !important;
+      margin: 0 !important;
+       padding-top: clamp(0.5rem, 2vw, 1rem);    /* مسافة فوق الهيدر */
+       padding-bottom: clamp(0.5rem, 2vw, 1rem); /* مسافة تحت الهيدر */
     }
-    input,button { direction: rtl; }
+        .logo {
+      max-width: 200px; 
+      transition: transform .3s;
+    }
+    .logo:hover { transform: scale(1.03); }
+
+    .grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+}
+.meal {
+  background: #121823;
+  border: 1px solid #1e2a3a;
+  border-radius: 12px;
+  overflow: hidden;
+  text-align: center;
+}
+.meal img {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  background: #0e1522;
+}
+.meal .info {
+  padding: 0.8rem;
+}
+.meal .name {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+.meal .price {
+  color: #9fb0c3;
+  margin-bottom: 0.6rem;
+}
+.meal button {
+  width: 100%;
+  background: #2b7fff;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  padding: 0.5rem;
+  cursor: pointer;
+}
+.meal button:hover {
+  background: #0b5ed7;
+}
+
+</style>
+<style>
+/* منع تحديد النص */
+body {
+  -webkit-user-select: none; /* Chrome و Safari */
+  -moz-user-select: none;    /* Firefox */
+  -ms-user-select: none;     /* Internet Explorer / Edge */
+  user-select: none;
+}
+</style>
+
+<script>
+// 🚫 منع استخدام اختصارات لوحة المفاتيح (Ctrl+C, Ctrl+V, Ctrl+U ...)
+document.addEventListener('keydown', function(e) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+  }
+});
+
+// 🚫 منع النقر بزر الماوس الأيمن
+document.addEventListener('contextmenu', function(e) {
+  e.preventDefault();
+});
+
+// 🚫 منع سحب الصور (إن وُجدت)
+document.addEventListener('dragstart', function(e) {
+  e.preventDefault();
+});
+
+// 🚫 منع النقر المزدوج (لتفادي تحديد النص)
+document.addEventListener('dblclick', function(e) {
+  e.preventDefault();
+}, { passive: false });
+</script>
+
   </style>
 </head>
 <body>
   <main>
-    <h1>مقارن التوصيل السعودي</h1>
-    <p class="muted">اكتب اسم المطعم (مثال: <strong>هرفي</strong>) وسيتم البحث في هنقرستيشن، جاهز، كيتا، تو يو، مستر مندوب وحساب الإجمالي (السعر + التوصيل).</p>
+  <h1>مقارن أسعار تطبيقات التوصيل</h1>
+  <p class="muted">اكتب اسم المطعم (مثال: <strong>هرفي</strong>) لرؤية قائمة الوجبات مع الصور، ثم اختر وجبة لمقارنة السعر بين التطبيقات.</p>
 
-    <form method="post" class="card">
-      <div class="grid">
-        <div>
-          <label>اسم المطعم</label>
-          <input type="text" name="restaurant" placeholder="هرفي" required />
-        </div>
-        <div>
-          <label>المدينة</label>
-          <input type="text" name="city" value="الرياض" />
-        </div>
-        <div>
-          <label>Latitude</label>
-          <input type="number" step="0.0001" name="lat" value="24.7136" />
-        </div>
-        <div>
-          <label>Longitude</label>
-          <input type="number" step="0.0001" name="lng" value="46.6753" />
+  <!-- ✅ مربع البحث -->
+  <form method="post" class="card">
+    <input type="text" name="restaurant" placeholder="اكتب اسم المطعم..." required />
+    <button type="submit">🔍 ابحث</button>
+  </form>
+
+  <!-- ✅ قائمة الوجبات -->
+  {% if menu and menu|length > 0 %}
+  <div class="card" style="margin-top:1rem;">
+    <h3>قائمة وجبات {{ query.restaurant }}</h3>
+    <div class="grid">
+      {% for m in menu %}
+      <div class="meal">
+        {% if m.image %}
+          <img src="{{ m.image }}" alt="{{ m.name }}">
+        {% else %}
+          <img src="https://dummyimage.com/600x400/0e1522/ffffff&text=No+Image" alt="">
+        {% endif %}
+        <div class="info">
+          <div class="name">{{ m.name }}</div>
+          <div class="price">{{ '%.2f'|format(m.price) if m.price is not none else '-' }} ر.س</div>
+          <form method="post">
+            <input type="hidden" name="restaurant" value="{{ query.restaurant }}">
+            <input type="hidden" name="meal_name" value="{{ m.name }}">
+            <button type="submit" name="compare" value="1" class="btn">قارن السعر 🔍</button>
+          </form>
         </div>
       </div>
-      <button type="submit" style="margin-top: .8rem;">🔍 ابحث</button>
-    </form>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
-    {% if error %}
-      <article class="card" style="border-color:#5b2222;background:#141017;color:#f7c9c9">{{ error }}</article>
-    {% endif %}
-
-    {% if results is not none %}
-      <article class="card">
-        <header style="display:flex;justify-content:space-between;align-items:center;">
-          <strong>النتائج</strong>
-          {% if query %}
-            <span class="badge">مطعم: {{ query.restaurant }} • {{ query.city }}</span>
-          {% endif %}
-        </header>
-        <div style="overflow:auto;">
-          <table>
-            <thead>
-              <tr>
-                <th>التطبيق</th>
-                <th>الفرع/المطابقة</th>
-                <th>أقل صنف</th>
-                <th>سعره</th>
-                <th>التوصيل</th>
-                <th>الإجمالي</th>
-                <th>رابط</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% set best_total = None %}
-              {% for q in results %}
-                {% if best_total is none and q.total is not none %}
-                  {% set best_total = q.total %}
-                {% endif %}
-                <tr {% if best_total is not none and q.total == best_total %}style="outline:2px solid #1bc57b"{% endif %}>
-                  <td>{{ q.app_name }}</td>
-                  <td>{{ q.branch }}</td>
-                  <td>{{ q.item_name or '-' }}</td>
-                  <td>{{ '%.2f'|format(q.item_price) if q.item_price is not none else '-' }}</td>
-                  <td>
-                    {% if q.delivery_free %}<span class="badge best">مجاني</span>
-                    {% else %}
-                      {{ '%.2f'|format(q.delivery_fee) if q.delivery_fee is not none else '-' }}
-                    {% endif %}
-                  </td>
-                  <td><strong>{{ '%.2f'|format(q.total) if q.total is not none else '-' }}</strong></td>
-                  <td>{% if q.url %}<a class="btn" target="_blank" rel="noopener" href="{{ q.url }}">فتح</a>{% else %}-{% endif %}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <footer class="muted" style="margin-top:.6rem">
-          * القيم تقديرية بالاعتماد على القراءة المباشرة للصفحات. قد تختلف بحسب الفرع والإضافات والعروض المؤقتة.
-        </footer>
-      </article>
-    {% endif %}
-  </main>
-</body>
-</html>
+  <!-- ✅ نتائج المقارنة -->
+  {% if results %}
+  <div class="card" style="margin-top:1.5rem;">
+    <h3>نتائج المقارنة لوجبة: {{ meal_name }}</h3>
+    <table class="price-table">
+      <thead>
+        <tr>
+          <th>التطبيق</th>
+          <th>سعر الوجبة</th>
+          <th>التوصيل</th>
+          <th>الإجمالي</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% set best_total = results[0].total if results and results[0].total is not none else none %}
+        {% for r in results %}
+        <tr {% if best_total and r.total == best_total %}class="best"{% endif %}>
+          <td>{{ r.app }}</td>
+          <td>{{ '%.2f'|format(r.item_price) if r.item_price is not none else '-' }}</td>
+          <td>{% if r.delivery_free %}مجاني{% else %}{{ '%.2f'|format(r.delivery_fee) if r.delivery_fee is not none else '-' }}{% endif %}</td>
+          <td><strong>{{ '%.2f'|format(r.total) if r.total is not none else '-' }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</main>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>نتائج المقارنة — {{ meal_name }}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+
+  <style>
+    body {
+      background: #0b0f14;
+      color: #f2f5f8;
+      font-family: "Cairo", sans-serif;
+    }
+
+    main {
+      max-width: 900px;
+      margin-inline: auto;
+      padding: 2rem 1rem;
+    }
+
+    .card {
+      background: #121823;
+      border: 1px solid #1e2a3a;
+      border-radius: 16px;
+      padding: 1rem 1.2rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+
+    th, td {
+      padding: 12px 10px;
+      text-align: center;
+      border-bottom: 1px solid #1e2a3a;
+    }
+
+    th {
+      background: #10151e;
+      font-weight: 600;
+    }
+
+    tr:hover {
+      background: #0e1420;
+    }
+
+    .muted {
+      color: #9fb0c3;
+      font-size: 0.9rem;
+      margin-top: 1rem;
+      text-align: center;
+    }
+
+    a.btn {
+      display: inline-block;
+      margin-top: 1rem;
+      background: #2b7fff;
+      color: #fff;
+      text-decoration: none;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      font-weight: 600;
+    }
+
+    a.btn:hover {
+      background: #0b5ed7;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>نتائج المقارنة لوجبة: {{ meal_name }}</h1>
+    <p class="muted">فيما يلي الأسعار المقرّبة للوجبة في كل تطبيق توصيل:</p>
+
+    {% if results %}
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>التطبيق</th>
+            <th>سعر الوجبة</th>
+            <th>التوصيل</th>
+            <th>الإجمالي</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in results %}
+          <tr>
+            <td>{{ r.app }}</td>
+            <td>{{ '%.2f'|format(r.item_price) if r.item_price is not none else '-' }}</td>
+            <td>
+              {% if r.delivery_free %}
+                مجاني
+              {% else %}
+                {{ '%.2f'|format(r.delivery_fee) if r.delivery_fee is not none else '-' }}
+              {% endif %}
+            </td>
+            <td><strong>{{ '%.2f'|format(r.total) if r.total is not none else '-' }}</strong></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="muted">لم يتم العثور على نتائج.</p>
+    {% endif %}
+
+    <div style="text-align:center;">
+      <a href="/" class="btn">🔙 العودة للصفحة الرئيسية</a>
+    </div>
+
+    <p class="muted">* القيم تقريبية بناءً على البيانات المباشرة من المواقع، وقد تختلف حسب المدينة والعروض المؤقتة.</p>
+  </main>
+</body>
+</html>
