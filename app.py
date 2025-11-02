@@ -417,6 +417,44 @@ def compare():
                            meal_name=meal_name,
                            results=results)
 
+@app.route("/autocomplete")
+def autocomplete():
+    query = (request.args.get("query") or "").strip()
+    if not query:
+        return jsonify([])
+
+    async def fetch_names():
+        names = set()
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                ctx = await browser.new_context(locale="ar-SA")
+                page = await ctx.new_page()
+                await page.goto("https://www.hungerstation.com/sa-ar", timeout=10000)
+                await page.keyboard.press("Escape")
+                await page.fill("input[type='search']", query)
+                await page.wait_for_timeout(2000)
+                html = await page.content()
+
+                import re
+                # 🔍 نبحث عن أسماء المطاعم فقط (بدون الفروع)
+                matches = re.findall(r"[\u0621-\u064A]{2,}(?:\s[\u0621-\u064A]{2,})?", html)
+                for name in matches:
+                    name = name.strip()
+                    # نخليها فقط اللي تبدأ بنفس الحروف المكتوبة
+                    if name.startswith(query) and len(name) > 2:
+                        names.add(name)
+        except:
+            pass
+
+        # نرجع أول 10 نتائج فقط
+        return sorted(list(names))[:10]
+
+    results = asyncio.run(fetch_names())
+    return jsonify(results)
+
+
+
 if __name__ == "__main__":
     # للتجربة محليًا
     app.run(host="0.0.0.0", port=5000, debug=True)
