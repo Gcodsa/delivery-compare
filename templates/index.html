@@ -71,6 +71,48 @@
   background: #0b5ed7;
 }
 
+/* ✅ يحافظ على الجدول داخل الإطار بدون خروج */
+.table-wrapper {
+  width: 100%;
+  overflow-x: hidden;     /* يمنع التمرير الأفقي */
+  overflow-y: visible;
+  margin-top: 1rem;
+  border-radius: 12px;
+}
+
+.price-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #121823;
+  border: 1px solid #1e2a3a;
+  border-radius: 12px;
+  margin: 0 auto;          /* يبقيه بالمنتصف */
+  table-layout: fixed;     /* 🔒 يجعل الأعمدة تتقلص بدون خروج */
+  word-break: break-word;  /* يمنع النص من تجاوز الخلية */
+}
+
+.price-table th,
+.price-table td {
+  padding: 12px 10px;
+  text-align: center;
+  border-bottom: 1px solid #1e2a3a;
+  vertical-align: middle;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.price-table th {
+  background: #10151e;
+  font-weight: 600;
+  color: #f2f5f8;
+}
+
+.price-table tr:hover {
+  background: #0e1420;
+}
+
+
+
 </style>
 <style>
 /* منع تحديد النص */
@@ -110,12 +152,11 @@ document.addEventListener('dblclick', function(e) {
 </head>
 <body>
   <main>
-  <h1>مقارن أسعار تطبيقات التوصيل</h1>
-  <p class="muted">اكتب اسم المطعم (مثال: <strong>هرفي</strong>) لرؤية قائمة الوجبات مع الصور، ثم اختر وجبة لمقارنة السعر بين التطبيقات.</p>
 
   <!-- ✅ مربع البحث -->
   <form method="post" class="card">
-    <input type="text" name="restaurant" placeholder="اكتب اسم المطعم..." required />
+    <input type="text" name="restaurant" placeholder="اكتب اسم المطعم..." required autocomplete="off" />
+
     <button type="submit">🔍 ابحث</button>
   </form>
 
