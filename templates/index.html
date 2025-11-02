@@ -159,6 +159,59 @@ document.addEventListener('dblclick', function(e) {
 
     <button type="submit">🔍 ابحث</button>
   </form>
+<script>
+const input = document.querySelector('input[name="restaurant"]');
+const suggestions = document.createElement("div");
+suggestions.id = "suggestions";
+suggestions.style.cssText = `
+  background:#1a2134;
+  border:1px solid #2b364d;
+  border-radius:10px;
+  max-height:220px;
+  overflow-y:auto;
+  display:none;
+  margin-top:8px;
+  position:absolute;
+  z-index:1000;
+  width:100%;
+`;
+input.parentNode.appendChild(suggestions);
+
+input.addEventListener("input", async () => {
+  const query = input.value.trim();
+  if (query.length < 2) {
+    suggestions.style.display = "none";
+    return;
+  }
+  try {
+    const res = await fetch(`/autocomplete?query=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    if (data.length) {
+      suggestions.innerHTML = data.map(name =>
+        `<div style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #222;">${name}</div>`
+      ).join("");
+      suggestions.style.display = "block";
+    } else {
+      suggestions.style.display = "none";
+    }
+  } catch {
+    suggestions.style.display = "none";
+  }
+});
+
+suggestions.addEventListener("click", e => {
+  if (e.target.tagName === "DIV") {
+    input.value = e.target.textContent.trim();
+    suggestions.style.display = "none";
+  }
+});
+
+document.addEventListener("click", e => {
+  if (!suggestions.contains(e.target) && e.target !== input) {
+    suggestions.style.display = "none";
+  }
+});
+</script>
 
   <!-- ✅ قائمة الوجبات -->
   {% if menu and menu|length > 0 %}
