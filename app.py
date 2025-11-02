@@ -420,21 +420,29 @@ def compare():
 from flask import jsonify
 import asyncio
 
-from flask import jsonify
-
 @app.route("/autocomplete")
 def autocomplete():
     query = request.args.get("query", "").strip()
-    if not query or len(query) < 2:
+    if len(query) < 2:
         return jsonify([])
 
-    # محاكاة بحث بسيط (تقدر تستبدله لاحقاً ببحث فعلي من هنقرستيشن)
-    sample_restaurants = [
-        "هرفي", "ماكدونالدز", "كنتاكي", "بيتزا هت", "البيك", "الماجد", "شاورما كنج",
-        "فايف قايز", "ستيك هاوس", "بروستد تايم", "برجر كنج", "سبوي"
-    ]
-    results = [r for r in sample_restaurants if r.startswith(query)]
-    return jsonify(results[:10])
+    async def fetch():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page(locale="ar-SA")
+            await page.goto("https://www.hungerstation.com/sa-ar", timeout=15000)
+            await page.fill("input[type='search']", query)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(3000)
+            html = await page.content()
+            await browser.close()
+            return html
+
+    html = asyncio.run(fetch())
+    soup = BeautifulSoup(html, "lxml")
+    names = [el.get_text(strip=True) for el in soup.select("a[href*='/restaurant']")][:10]
+    return jsonify(names)
 
 
 
