@@ -417,6 +417,9 @@ def compare():
                            meal_name=meal_name,
                            results=results)
 
+from flask import jsonify
+import asyncio
+
 @app.route("/autocomplete")
 def autocomplete():
     query = (request.args.get("query") or "").strip()
@@ -424,35 +427,38 @@ def autocomplete():
         return jsonify([])
 
     async def fetch_names():
+        import re
         names = set()
         try:
+            from playwright.async_api import async_playwright
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 ctx = await browser.new_context(locale="ar-SA")
                 page = await ctx.new_page()
-                await page.goto("https://www.hungerstation.com/sa-ar", timeout=10000)
+                await page.goto("https://www.hungerstation.com/sa-ar", timeout=15000)
                 await page.keyboard.press("Escape")
                 await page.fill("input[type='search']", query)
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(3000)
+
                 html = await page.content()
-
-                import re
-                # 🔍 نبحث عن أسماء المطاعم فقط (بدون الفروع)
-                matches = re.findall(r"[\u0621-\u064A]{2,}(?:\s[\u0621-\u064A]{2,})?", html)
+                text = re.sub(r"<[^>]+>", " ", html)
+                matches = re.findall(r"[\u0621-\u064A]{3,}(?:\s[\u0621-\u064A]{2,})?", text)
                 for name in matches:
-                    name = name.strip()
-                    # نخليها فقط اللي تبدأ بنفس الحروف المكتوبة
-                    if name.startswith(query) and len(name) > 2:
-                        names.add(name)
-        except:
-            pass
+                    if name.strip().startswith(query) and len(name) > 3:
+                        names.add(name.strip())
+        except Exception as e:
+            print("❌ Error in autocomplete:", e)
+        return sorted(names)[:10]
 
-        # نرجع أول 10 نتائج فقط
-        return sorted(list(names))[:10]
+    try:
+        results = asyncio.run(fetch_names())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        results = loop.run_until_complete(fetch_names())
 
-    results = asyncio.run(fetch_names())
+    print("🔎 نتائج البحث:", results)
     return jsonify(results)
-
 
 
 if __name__ == "__main__":
