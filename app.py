@@ -1,24 +1,22 @@
-import os, re, time, yaml, asyncio
-from typing import List, Optional, Dict
-from dataclasses import dataclass, asdict
-from flask import Flask, render_template, request
+import os, re, asyncio, math
+from dataclasses import dataclass
+from typing import List, Optional, Dict, Tuple
+from flask import Flask, render_template, request, redirect, url_for
 from cachetools import TTLCache
-from pydantic import BaseModel
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
 from rapidfuzz import fuzz
 
-# ---------- إعدادات ----------
-DEFAULT_CONF = {
-    "city": "الرياض",
-    "lat": 24.7136,
-    "lng": 46.6753,
-    "timeout_ms": 25000,
-    "currency_hint": "ريال|SAR|ر\\.س|﷼|SR",
-}
-if os.path.exists("config.yaml"):
-    DEFAULT_CONF.update(yaml.safe_load(open("config.yaml", "r", encoding="utf-8")) or {})
+# ----------------- إعدادات افتراضية -----------------
+DEFAULT_CITY = "الرياض"
+DEFAULT_LAT = 24.7136
+DEFAULT_LNG = 46.6753
+TIMEOUT_MS = 25000
 
+# ذاكرة مؤقتة
+SEARCH_CACHE = TTLCache(maxsize=256, ttl=300)   # 5 دقائق
+MENU_CACHE   = TTLCache(maxsize=256, ttl=600)   # 10 دقائق
+
+# تعبير رقم السعر (ريال/SAR…)
 PRICE_RE = re.compile(r"""
 (?<!\d)
 (?:SR|SAR|ر\.?س\.?|﷼|ر﷼|ريال)?\s*
@@ -26,10 +24,12 @@ PRICE_RE = re.compile(r"""
 \s*(?:SR|SAR|ر\.?س\.?|﷼|ر﷼|ريال)?
 """, re.IGNORECASE | re.VERBOSE)
 
-def parse_price(val: str) -> Optional[float]:
-    if not val: return None
-    m = PRICE_RE.search(val)
-    if not m: return None
+def parse_price(text: str) -> Optional[float]:
+    if not text:
+        return None
+    m = PRICE_RE.search(text)
+    if not m:
+        return None
     num = m.group(1).replace(",", "").replace(" ", "")
     try:
         return float(num)
@@ -37,373 +37,386 @@ def parse_price(val: str) -> Optional[float]:
         return None
 
 @dataclass
-class Quote:
-    app_name: str
-    branch: str
-    item_name: str
+class MenuItem:
+    name: str
+    price: Optional[float]
+    image: Optional[str] = None
+
+@dataclass
+class AppResult:
+    app: str
+    item_name: Optional[str]
     item_price: Optional[float]
-    delivery_fee: Optional[float]
     delivery_free: bool
-    eta: Optional[str]
-    url: Optional[str]
+    delivery_fee: Optional[float]
+    total: Optional[float]
 
-    @property
-    def total(self) -> Optional[float]:
-        if self.item_price is None:
-            return None
-        fee = 0.0 if self.delivery_free else (self.delivery_fee or 0.0)
-        return round(self.item_price + fee, 2)
-
-# ذاكرة مؤقتة 5 دقائق
-CACHE = TTLCache(maxsize=256, ttl=300)
-
-# ---------- أدوات عامة للقراءة ----------
-async def ensure_page_ready(page, timeout_ms: int):
+# ----------------- Helpers -----------------
+async def ensure_ready(page, timeout: int):
     try:
-        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        await page.wait_for_load_state("networkidle", timeout=timeout)
     except:
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms//2)
+            await page.wait_for_load_state("domcontentloaded", timeout=timeout//2)
         except:
             pass
 
-async def text_content(el):
-    try:
-        return (await el.text_content()) or ""
-    except:
-        return ""
-
-def best_like(target: str, candidates: List[str]) -> Optional[str]:
-    # يختار أقرب نص للاسم المطلوب (مثلاً "هرفي")
-    best = None; best_score = -1
+def best_match(target: str, candidates: List[str]) -> Optional[str]:
+    best, score = None, -1
     for c in candidates:
-        s = fuzz.partial_ratio(target, c)
-        if s > best_score:
-            best_score = s; best = c
+        s = fuzz.token_set_ratio(target, c)
+        if s > score:
+            score, best = s, c
     return best
 
-# ---------- محولات التطبيقات (هيوريستكس عامة + انتقائية) ----------
+def pick_delivery_fee_from_soup(soup: BeautifulSoup) -> Tuple[bool, Optional[float]]:
+    texts = []
+    for sel in ["[class*='delivery']", "[id*='delivery']", "[class*='رسوم']", "[id*='رسوم']", "[class*='fee']", "[id*='fee']"]:
+        for el in soup.select(sel):
+            t = el.get_text(" ", strip=True)
+            if t:
+                texts.append(t)
+    texts = list(dict.fromkeys(texts))
+    for t in texts:
+        if "مجاني" in t or "Free" in t:
+            return True, 0.0
+    for t in texts:
+        p = parse_price(t)
+        if p is not None:
+            return False, p
+    full = soup.get_text(" ", strip=True)
+    if "مجاني" in full or "Free" in full:
+        return True, 0.0
+    p = parse_price(full)
+    if p is not None:
+        return False, p
+    return False, None
+
+def extract_menu_items_generic(soup: BeautifulSoup, limit: int = 12) -> List[MenuItem]:
+    """هيوريستك عامة: يلتقط أول N وجبات باسم + سعر + صورة (إن وجدت)"""
+    items: List[MenuItem] = []
+    cards = soup.select(
+        "[class*='item'], [class*='menu'], [class*='product'], [data-testid*='item'], li, article"
+    )
+    for card in cards:
+        text = card.get_text(" ", strip=True)
+        price = parse_price(text)
+        if price is None:
+            continue
+        # اسم
+        name = None
+        for sel in ["[class*='title']", ".name", "h3", "h4", "h5", "[data-testid*='title']"]:
+            t = card.select_one(sel)
+            if t:
+                name = t.get_text(strip=True)
+                break
+        if not name:
+            # fallback: أول 40 حرف قبل السعر
+            name = text.split("\n")[0][:40]
+
+        # صورة
+        img_url = None
+        img = card.select_one("img")
+        if img:
+            img_url = img.get("src") or img.get("data-src") or img.get("data-original")
+        items.append(MenuItem(name=name, price=price, image=img_url))
+
+        if len(items) >= limit:
+            break
+    return items
+
+# ----------------- Providers -----------------
 class BaseProvider:
     name = "BASE"
     base_url = ""
-    search_url = ""
-    def __init__(self, city: str, lat: float, lng: float, timeout_ms: int):
-        self.city = city; self.lat = lat; self.lng = lng; self.timeout_ms = timeout_ms
+    def __init__(self, city: str, lat: float, lng: float, timeout_ms: int = TIMEOUT_MS):
+        self.city = city
+        self.lat = lat
+        self.lng = lng
+        self.timeout_ms = timeout_ms
 
-    async def search(self, play, query: str) -> Optional[Quote]:
-        raise NotImplementedError
+    async def open(self, play):
+        browser = await play.chromium.launch(headless=True)
+        ctx = await browser.new_context(
+            locale="ar-SA",
+            geolocation={"latitude": self.lat, "longitude": self.lng},
+            permissions=["geolocation"],
+        )
+        page = await ctx.new_page()
+        return browser, ctx, page
 
-    # مساعدات عامة لاستخراج السعر/التوصيل بمرونة
-    def pick_min_item_price(self, soup: BeautifulSoup) -> Optional[Dict]:
-        # يبحث عن أقل سعر واضح في بطاقات الأصناف داخل صفحة المطعم
-        cards = soup.select("[class*='item'], [class*='menu'], [class*='product'], [data-testid*='item']")
-        best_price = None; best_name = None
-        for card in cards[:100]:
-            txt = card.get_text(separator=" ", strip=True)
-            p = parse_price(txt)
-            if p is not None:
-                if (best_price is None) or (p < best_price):
-                    # اسم الصنف التقريبي
-                    title_el = None
-                    for sel in ["[class*='title']","h3","h4",".name","[data-testid*='title']"]:
-                        te = card.select_one(sel)
-                        if te: title_el = te; break
-                    name = title_el.get_text(strip=True) if title_el else txt[:60]
-                    best_price = p; best_name = name
-        if best_price is not None:
-            return {"name": best_name, "price": best_price}
-        return None
-
-    def pick_delivery_fee(self, soup: BeautifulSoup) -> (bool, Optional[float]):
-        fee_texts = []
-        for sel in [
-            "[class*='delivery']", "[id*='delivery']",
-            "[class*='fee']", "[id*='fee']",
-            "[class*='charges']",
-            "[class*='shipping']",
-            "[class*='رسوم']", "[id*='رسوم']"
-        ]:
-            for el in soup.select(sel):
-                t = el.get_text(separator=" ", strip=True)
-                if t: fee_texts.append(t)
-        fee_texts = list(dict.fromkeys(fee_texts))
-        # مجاني؟
-        for t in fee_texts:
-            if "مجاني" in t or "Free" in t:
-                return True, 0.0
-        # قيمة؟
-        for t in fee_texts:
-            p = parse_price(t)
-            if p is not None:
-                return False, p
-        # فحص النص الكامل كملاذ أخير
-        full = soup.get_text(separator=" ", strip=True)
-        if "مجاني" in full or "Free" in full:
-            return True, 0.0
-        p = parse_price(full)
-        if p is not None:
-            return False, p
-        return False, None
-
-# --------- مزود: هنقرستيشن (هيوريستك) ---------
 class HungerStation(BaseProvider):
-    name = "HungerStation"
+    name = "هنقرستيشن"
     base_url = "https://www.hungerstation.com/sa-ar"
-    async def search(self, play, query: str) -> Optional[Quote]:
-        browser = await play.chromium.launch(headless=True)
-        ctx = await browser.new_context(locale="ar-SA", geolocation={"latitude": self.lat, "longitude": self.lng}, permissions=["geolocation"])
-        page = await ctx.new_page()
+
+    async def fetch_menu(self, play, restaurant: str) -> Tuple[List[MenuItem], bool, Optional[float]]:
+        """يرجع منيو (اسم + سعر + صورة)، والتوصيل"""
+        browser, ctx, page = await self.open(play)
         try:
             await page.goto(self.base_url, timeout=self.timeout_ms)
-            await ensure_page_ready(page, self.timeout_ms)
-            # حقل البحث العام
-            # إذا فيه مودال للمدينة، نحاول تجاوزه تلقائياً
-            # البحث
+            await ensure_ready(page, self.timeout_ms)
             await page.keyboard.press("Escape")
-            await page.fill("input[type='search'], input[role='searchbox']", query)
+            await page.fill("input[type='search'], input[role='searchbox']", restaurant)
             await page.keyboard.press("Enter")
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
 
-            # التقاط بطاقة المطعم الأقرب للاسم
+            # التقط بطاقة المطعم الأقرب
             cards = await page.query_selector_all("a[href*='restaurant'], a[href*='rest']")
-            names = []
-            for c in cards[:20]:
+            options = []
+            for c in cards[:30]:
                 t = (await c.text_content()) or ""
                 t = re.sub(r"\s+", " ", t).strip()
-                if t: names.append(t)
-            best = best_like(query, names)
-            if not best:
-                await ctx.close(); await browser.close(); return None
-            # انقر بطاقة المطعم المطابقة
-            for c in cards[:20]:
-                t = (await c.text_content()) or ""
-                t2 = re.sub(r"\s+", " ", t).strip()
-                if t2 == best:
-                    await c.click()
+                if t:
+                    options.append(t)
+            pick = best_match(restaurant, options)
+            if pick:
+                for c in cards[:30]:
+                    t = (await c.text_content()) or ""
+                    t = re.sub(r"\s+", " ", t).strip()
+                    if t == pick:
+                        await c.click()
+                        break
+                await ensure_ready(page, self.timeout_ms)
+
+            html = await page.content()
+            soup = BeautifulSoup(html, "lxml")
+            items = extract_menu_items_generic(soup, limit=12)
+            free, fee = pick_delivery_fee_from_soup(soup)
+            return items, free, fee
+        except:
+            return [], False, None
+        finally:
+            await ctx.close(); await browser.close()
+
+    async def quote_item(self, play, restaurant: str, target_item_name: str) -> AppResult:
+        """يعطي سعر نفس الوجبة (بالاسم) قدر الإمكان + التوصيل + الإجمالي"""
+        items, free, fee = await self.fetch_menu(play, restaurant)
+        # اختار أقرب اسم للصنف المطلوب
+        cand = best_match(target_item_name, [i.name for i in items]) if items else None
+        price = None
+        if cand:
+            for i in items:
+                if i.name == cand:
+                    price = i.price
                     break
-            await ensure_page_ready(page, self.timeout_ms)
-            html = await page.content()
-            soup = BeautifulSoup(html, "lxml")
+        total = None
+        if price is not None:
+            total = price + (0.0 if free else (fee or 0.0))
+        return AppResult(self.name, cand, price, free, fee, total)
 
-            item = self.pick_min_item_price(soup)
-            free, fee = self.pick_delivery_fee(soup)
-            return Quote(self.name, best, item["name"] if item else "", item["price"] if item else None, fee, free, None, page.url)
-        except:
-            return None
-        finally:
-            await ctx.close(); await browser.close()
-
-# --------- مزود: جاهز (هيوريستك) ---------
 class Jahez(BaseProvider):
-    name = "Jahez"
+    name = "جاهز"
     base_url = "https://www.jahez.net/ar"
-    async def search(self, play, query: str) -> Optional[Quote]:
-        browser = await play.chromium.launch(headless=True)
-        ctx = await browser.new_context(locale="ar-SA", geolocation={"latitude": self.lat, "longitude": self.lng}, permissions=["geolocation"])
-        page = await ctx.new_page()
+
+    async def quote_item(self, play, restaurant: str, target_item_name: str) -> AppResult:
+        browser, ctx, page = await self.open(play)
         try:
             await page.goto(self.base_url, timeout=self.timeout_ms)
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             await page.keyboard.press("Escape")
-            # غالباً فيه مربع بحث
-            await page.fill("input[type='search'], input[role='searchbox']", query)
+            await page.fill("input[type='search'], input[role='searchbox']", restaurant)
             await page.keyboard.press("Enter")
-            await ensure_page_ready(page, self.timeout_ms)
-            cards = await page.query_selector_all("a:has-text('"+query[:4]+"'), a[href*='restaurant']")
-            names = []
-            for c in cards[:20]:
-                t = (await c.text_content()) or ""
-                t = re.sub(r"\s+", " ", t).strip()
-                if t: names.append(t)
-            best = best_like(query, names)
-            if not best: return None
-            # افتح المطعم
-            for c in cards[:20]:
-                t = (await c.text_content()) or ""
-                if re.sub(r"\s+"," ", (t or "")).strip() == best:
-                    await c.click(); break
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             html = await page.content()
             soup = BeautifulSoup(html, "lxml")
-            item = self.pick_min_item_price(soup)
-            free, fee = self.pick_delivery_fee(soup)
-            return Quote(self.name, best, item["name"] if item else "", item["price"] if item else None, fee, free, None, page.url)
+            items = extract_menu_items_generic(soup, limit=50)
+            free, fee = pick_delivery_fee_from_soup(soup)
+            cand = best_match(target_item_name, [i.name for i in items]) if items else None
+            price = None
+            if cand:
+                for i in items:
+                    if i.name == cand:
+                        price = i.price
+                        break
+            total = None
+            if price is not None:
+                total = price + (0.0 if free else (fee or 0.0))
+            return AppResult(self.name, cand, price, free, fee, total)
         except:
-            return None
+            return AppResult(self.name, None, None, False, None, None)
         finally:
             await ctx.close(); await browser.close()
 
-# --------- مزود: كيتا ---------
 class Kieta(BaseProvider):
-    name = "Kieta"
+    name = "كيتا"
     base_url = "https://kieta.sa/"
-    async def search(self, play, query: str) -> Optional[Quote]:
-        browser = await play.chromium.launch(headless=True)
-        ctx = await browser.new_context(locale="ar-SA", geolocation={"latitude": self.lat, "longitude": self.lng}, permissions=["geolocation"])
-        page = await ctx.new_page()
+
+    async def quote_item(self, play, restaurant: str, target_item_name: str) -> AppResult:
+        browser, ctx, page = await self.open(play)
         try:
             await page.goto(self.base_url, timeout=self.timeout_ms)
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             await page.keyboard.press("Escape")
-            await page.fill("input[type='search'], input[role='searchbox']", query)
+            await page.fill("input[type='search'], input[role='searchbox']", restaurant)
             await page.keyboard.press("Enter")
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             html = await page.content()
             soup = BeautifulSoup(html, "lxml")
-            # البحث عن بطاقة تحتوي اسم المطعم
-            candidates = [a.get_text(" ", strip=True) for a in soup.select("a") if query[:3] in a.get_text(" ", strip=True)]
-            best = best_like(query, candidates)
-            if not best: return None
-            # محاولة فتح أول رابط مطابق
-            link = None
-            for a in soup.select("a"):
-                t = a.get_text(" ", strip=True)
-                if t == best:
-                    link = a.get("href"); break
-            if link:
-                await page.goto(link, timeout=self.timeout_ms)
-                await ensure_page_ready(page, self.timeout_ms)
-            html = await page.content()
-            soup = BeautifulSoup(html, "lxml")
-            item = self.pick_min_item_price(soup)
-            free, fee = self.pick_delivery_fee(soup)
-            return Quote(self.name, best, item["name"] if item else "", item["price"] if item else None, fee, free, None, page.url)
+            items = extract_menu_items_generic(soup, limit=50)
+            free, fee = pick_delivery_fee_from_soup(soup)
+            cand = best_match(target_item_name, [i.name for i in items]) if items else None
+            price = None
+            if cand:
+                for i in items:
+                    if i.name == cand:
+                        price = i.price
+                        break
+            total = None
+            if price is not None:
+                total = price + (0.0 if free else (fee or 0.0))
+            return AppResult(self.name, cand, price, free, fee, total)
         except:
-            return None
+            return AppResult(self.name, None, None, False, None, None)
         finally:
             await ctx.close(); await browser.close()
 
-# --------- مزود: تو يو ---------
 class ToYou(BaseProvider):
-    name = "ToYou"
+    name = "تو يو"
     base_url = "https://www.toyou.com/ar"
-    async def search(self, play, query: str) -> Optional[Quote]:
-        browser = await play.chromium.launch(headless=True)
-        ctx = await browser.new_context(locale="ar-SA", geolocation={"latitude": self.lat, "longitude": self.lng}, permissions=["geolocation"])
-        page = await ctx.new_page()
+
+    async def quote_item(self, play, restaurant: str, target_item_name: str) -> AppResult:
+        browser, ctx, page = await self.open(play)
         try:
             await page.goto(self.base_url, timeout=self.timeout_ms)
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             await page.keyboard.press("Escape")
-            await page.fill("input[type='search'], input[role='searchbox']", query)
+            await page.fill("input[type='search'], input[role='searchbox']", restaurant)
             await page.keyboard.press("Enter")
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             html = await page.content()
             soup = BeautifulSoup(html, "lxml")
-            candidates = [a.get_text(" ", strip=True) for a in soup.select("a") if query[:3] in a.get_text(" ", strip=True)]
-            best = best_like(query, candidates)
-            if not best: return None
-            # افتح صفحة المطعم إن توفر الرابط
-            link = None
-            for a in soup.select("a"):
-                if a.get_text(" ", strip=True) == best:
-                    link = a.get("href"); break
-            if link:
-                await page.goto(link, timeout=self.timeout_ms)
-                await ensure_page_ready(page, self.timeout_ms)
-            html = await page.content()
-            soup = BeautifulSoup(html, "lxml")
-            item = self.pick_min_item_price(soup)
-            free, fee = self.pick_delivery_fee(soup)
-            return Quote(self.name, best, item["name"] if item else "", item["price"] if item else None, fee, free, None, page.url)
+            items = extract_menu_items_generic(soup, limit=50)
+            free, fee = pick_delivery_fee_from_soup(soup)
+            cand = best_match(target_item_name, [i.name for i in items]) if items else None
+            price = None
+            if cand:
+                for i in items:
+                    if i.name == cand:
+                        price = i.price
+                        break
+            total = None
+            if price is not None:
+                total = price + (0.0 if free else (fee or 0.0))
+            return AppResult(self.name, cand, price, free, fee, total)
         except:
-            return None
+            return AppResult(self.name, None, None, False, None, None)
         finally:
             await ctx.close(); await browser.close()
 
-# --------- مزود: مستر مندوب (Mrsool/مستر مندوب) ---------
-class MisterMandoub(BaseProvider):
-    name = "Mister Mandoub"
-    base_url = "https://www.mandoubapp.com"  # قد يختلف الدومين، الهيوريستك عام
-    async def search(self, play, query: str) -> Optional[Quote]:
-        browser = await play.chromium.launch(headless=True)
-        ctx = await browser.new_context(locale="ar-SA", geolocation={"latitude": self.lat, "longitude": self.lng}, permissions=["geolocation"])
-        page = await ctx.new_page()
+class Mandoub(BaseProvider):
+    name = "مستر مندوب"
+    base_url = "https://www.mandoubapp.com"
+
+    async def quote_item(self, play, restaurant: str, target_item_name: str) -> AppResult:
+        browser, ctx, page = await self.open(play)
         try:
             await page.goto(self.base_url, timeout=self.timeout_ms)
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             await page.keyboard.press("Escape")
-            await page.fill("input[type='search'], input[role='searchbox']", query)
+            await page.fill("input[type='search'], input[role='searchbox']", restaurant)
             await page.keyboard.press("Enter")
-            await ensure_page_ready(page, self.timeout_ms)
+            await ensure_ready(page, self.timeout_ms)
             html = await page.content()
             soup = BeautifulSoup(html, "lxml")
-            candidates = [a.get_text(" ", strip=True) for a in soup.select("a") if query[:3] in a.get_text(" ", strip=True)]
-            best = best_like(query, candidates)
-            if not best: return None
-            # افتح المطعم
-            link = None
-            for a in soup.select("a"):
-                if a.get_text(" ", strip=True) == best:
-                    link = a.get("href"); break
-            if link:
-                await page.goto(link, timeout=self.timeout_ms)
-                await ensure_page_ready(page, self.timeout_ms)
-            html = await page.content()
-            soup = BeautifulSoup(html, "lxml")
-            item = self.pick_min_item_price(soup)
-            free, fee = self.pick_delivery_fee(soup)
-            return Quote(self.name, best, item["name"] if item else "", item["price"] if item else None, fee, free, None, page.url)
+            items = extract_menu_items_generic(soup, limit=50)
+            free, fee = pick_delivery_fee_from_soup(soup)
+            cand = best_match(target_item_name, [i.name for i in items]) if items else None
+            price = None
+            if cand:
+                for i in items:
+                    if i.name == cand:
+                        price = i.price
+                        break
+            total = None
+            if price is not None:
+                total = price + (0.0 if free else (fee or 0.0))
+            return AppResult(self.name, cand, price, free, fee, total)
         except:
-            return None
+            return AppResult(self.name, None, None, False, None, None)
         finally:
             await ctx.close(); await browser.close()
 
-PROVIDERS = [HungerStation, Jahez, Kieta, ToYou, MisterMandoub]
+PROVIDERS = [HungerStation, Jahez, Kieta, ToYou, Mandoub]
 
-# ---------- التنفيذ الموازي ----------
-async def run_search(query: str, city: str, lat: float, lng: float, timeout_ms: int) -> List[Quote]:
-    async with async_playwright() as play:
-        tasks = []
-        for P in PROVIDERS:
-            tasks.append(P(city, lat, lng, timeout_ms).search(play, query))
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        quotes: List[Quote] = []
-        for r in results:
-            if isinstance(r, Quote):
-                quotes.append(r)
-            elif isinstance(r, Exception):
-                # ممكن تسجّل الأخطاء إن رغبت
-                pass
-            elif r is not None:
-                quotes.append(r)
-        return quotes
+# ----------------- تشغيل المجمع -----------------
+async def gather_menu_from_hunger(restaurant: str, city: str, lat: float, lng: float) -> Tuple[List[MenuItem], bool, Optional[float]]:
+    """نبدأ بالقائمة (مع الصور) من هنقرستيشن لأنه أوضح عادةً"""
+    cache_key = f"MENU|{restaurant}|{lat:.4f},{lng:.4f}"
+    if cache_key in MENU_CACHE:
+        return MENU_CACHE[cache_key]
+    from playwright.async_api import async_playwright
+    async with async_playwright() as p:
+        hs = HungerStation(city, lat, lng, TIMEOUT_MS)
+        menu, free, fee = await hs.fetch_menu(p, restaurant)
+    MENU_CACHE[cache_key] = (menu, free, fee)
+    return menu, free, fee
 
-# ---------- موقع الويب ----------
+async def compare_across_apps(restaurant: str, meal_name: str, city: str, lat: float, lng: float) -> List[AppResult]:
+    cache_key = f"CMP|{restaurant}|{meal_name}|{lat:.4f},{lng:.4f}"
+    if cache_key in SEARCH_CACHE:
+        return SEARCH_CACHE[cache_key]
+    from playwright.async_api import async_playwright
+    results: List[AppResult] = []
+    async with async_playwright() as p:
+        tasks = [prov(city, lat, lng).quote_item(p, restaurant, meal_name) for prov in PROVIDERS]
+        out = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in out:
+            if isinstance(r, AppResult):
+                results.append(r)
+            elif hasattr(r, "__dict__") and "app" in r.__dict__:
+                results.append(r)  # rarely
+    # رتب حسب الإجمالي (المعرف فقط)
+    results = sorted(results, key=lambda x: (x.total is None, x.total if x.total is not None else math.inf))
+    SEARCH_CACHE[cache_key] = results
+    return results
+
+# ----------------- Flask -----------------
 app = Flask(__name__)
-
-class SearchForm(BaseModel):
-    restaurant: str
-    city: str = DEFAULT_CONF["city"]
-    lat: float = DEFAULT_CONF["lat"]
-    lng: float = DEFAULT_CONF["lng"]
-
-def sort_quotes(qs: List[Quote]) -> List[Quote]:
-    # ترتيب حسب الإجمالي (None في الأخير)
-    return sorted(qs, key=lambda q: (q.total is None, q.total if q.total is not None else 1e9))
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    ctx = {"conf": DEFAULT_CONF, "results": None, "query": None}
+    ctx = {"results": None, "menu": None, "query": None, "error": None}
     if request.method == "POST":
         restaurant = (request.form.get("restaurant") or "").strip()
-        city = (request.form.get("city") or DEFAULT_CONF["city"]).strip()
-        lat = float(request.form.get("lat") or DEFAULT_CONF["lat"])
-        lng = float(request.form.get("lng") or DEFAULT_CONF["lng"])
         if not restaurant:
             ctx["error"] = "اكتب اسم المطعم (مثلاً: هرفي)"
             return render_template("index.html", **ctx)
-        cache_key = f"{restaurant}|{city}|{lat:.4f},{lng:.4f}"
-        if cache_key in CACHE:
-            quotes = CACHE[cache_key]
-        else:
-            quotes = asyncio.run(run_search(restaurant, city, lat, lng, int(DEFAULT_CONF["timeout_ms"])))
-            CACHE[cache_key] = quotes
-        ctx["results"] = sort_quotes(quotes)
-        ctx["query"] = {"restaurant": restaurant, "city": city, "lat": lat, "lng": lng}
+
+        city = DEFAULT_CITY
+        lat, lng = DEFAULT_LAT, DEFAULT_LNG
+
+        # اجلب منيو بالصور من هنقرستيشن
+        try:
+            menu, free, fee = asyncio.run(gather_menu_from_hunger(restaurant, city, lat, lng))
+        except Exception as e:
+            ctx["error"] = "تعذّر جلب قائمة الوجبات. حاول مرة أخرى."
+            return render_template("index.html", **ctx)
+
+        ctx["menu"] = menu
+        ctx["query"] = {"restaurant": restaurant, "city": city}
+        return render_template("menu.html", **ctx)
     return render_template("index.html", **ctx)
 
+@app.route("/compare", methods=["POST"])
+def compare():
+    restaurant = (request.form.get("restaurant") or "").strip()
+    meal_name = (request.form.get("meal_name") or "").strip()
+    if not restaurant or not meal_name:
+        return redirect(url_for("index"))
+
+    city = DEFAULT_CITY
+    lat, lng = DEFAULT_LAT, DEFAULT_LNG
+
+    try:
+        results = asyncio.run(compare_across_apps(restaurant, meal_name, city, lat, lng))
+    except Exception:
+        results = []
+
+    return render_template("compare.html",
+                           restaurant=restaurant,
+                           meal_name=meal_name,
+                           results=results)
+
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    # للتجربة محليًا
+    app.run(host="0.0.0.0", port=5000, debug=True)
